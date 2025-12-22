@@ -1,0 +1,12 @@
+[project]
+name = "algo-massive"
+version = "0.1.0"
+description = "Financial KPI Dashboard using EODHD API"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas>=2.0.0",
+    "requests>=2.25.0",
+    "streamlit>=1.30.0",
+    "numpy>=1.20.0"
+]
