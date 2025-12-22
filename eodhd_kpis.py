@@ -108,7 +108,10 @@ def build_dataframe(api_key=None):
         print("Warning: Detected invalid/revoked demo key. Reverting to 'DEMO'.")
         current_api_key = "DEMO"
 
-    if not TICKERS:
+    # Fetch tickers dynamically EVERY TIME the function is called
+    current_tickers = fetch_tickers_from_sheet()
+    
+    if not current_tickers:
         print("No tickers found.")
         return pd.DataFrame()
 
@@ -117,7 +120,7 @@ def build_dataframe(api_key=None):
         quotes = {} 
 
         rows = []
-        for t in TICKERS:
+        for t in current_tickers:
             # Ensure ticker has .US for the API call if missing (common issue)
             api_ticker = t if t.endswith(".US") else f"{t}.US"
             
