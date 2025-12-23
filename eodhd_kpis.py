@@ -5,7 +5,6 @@ import os
 
 # Default to environment variable, fallback to "DEMO"
 DEFAULT_API_KEY = os.environ.get("EODHD_API_KEY", "DEMO")
-
 # Google Sheet Configuration
 # We use the 'export' format to get a clean CSV
 # gid=997898919 is the specific tab ID you provided
@@ -58,7 +57,7 @@ def fetch_us_quote_delayed(session: requests.Session, tickers: list[str], api_ke
     # This function is deprecated in favor of the real-time check requested by user
     return {}
 
-def get_last_price(session, ticker: str, api_key: str) -> float:
+def get_current_price(session, ticker: str, api_key: str) -> float:
     # Use real-time endpoint as requested
     base_url = "https://eodhd.com/api/real-time"
     url = f"{base_url}/{ticker}"
@@ -128,7 +127,7 @@ def build_dataframe(api_key=None):
             f = fetch_fundamentals(session, t, current_api_key)
             
             # Fetch Price using the new method
-            price = get_last_price(session, api_ticker, current_api_key)
+            price = get_current_price(session, api_ticker, current_api_key)
             
             # Try to get data from fundamentals if price is missing (fallback)
             # Market Cap fallback
@@ -140,7 +139,7 @@ def build_dataframe(api_key=None):
                 "industry": get_nested(f, ["General", "Industry"]),
                 "country": get_nested(f, ["General", "CountryName"]),
                 "currency": get_nested(f, ["General", "CurrencyCode"]),
-                "last price": price,
+                "current price": price,
                 "market cap": mcap,
                 "price to book": get_nested(f, ["Valuation", "PriceBookMRQ"]),
                 "book value per share": get_nested(f, ["Highlights", "BookValue"]),
@@ -156,7 +155,7 @@ def build_dataframe(api_key=None):
 
     cols = [
         "ticker", "name", "industry", "country", "currency",
-        "last price", "market cap", "price to book", "book value per share",
+        "current price", "market cap", "price to book", "book value per share",
         "trailing eps", "forward eps", "trailing pe", "forward pe",
         "dividend yield [%]", "dividend rate", "beta"
     ]
@@ -164,7 +163,7 @@ def build_dataframe(api_key=None):
 
     # --- Calculate Graham Number & Indicator ---
     # Ensure numeric types (coerce errors to NaN)
-    for col in ["book value per share", "trailing eps", "last price"]:
+    for col in ["book value per share", "trailing eps", "current price"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     # Graham Number = Sqrt(22.5 * EPS * BVPS)
@@ -181,7 +180,7 @@ def build_dataframe(api_key=None):
 
     # Graham Indicator = Graham Number - Last Price
     # (Positive means undervalued, Negative means overvalued relative to Graham Number)
-    df["graham indicator"] = df["graham"] - df["last price"]
+    df["graham indicator"] = df["graham"] - df["current price"]
 
     # --- Graham Label ---
     # Good if Indicator > 0 (Undervalued), Bad if <= 0 (Overvalued), else "can't define"

@@ -38,9 +38,9 @@ if st.button("Fetch Latest Data", type="primary"):
                 hide_index=True,
                 column_config={
                     "market cap": st.column_config.NumberColumn(format="$%d"),
-                    "last price": st.column_config.NumberColumn(format="$%.2f"),
+                    "current price": st.column_config.NumberColumn(format="$%.2f"),
                     "graham": st.column_config.NumberColumn(format="%.2f", help="Graham Number = √(22.5 * EPS * Book Value)"),
-                    "graham indicator": st.column_config.NumberColumn(format="%.2f", help="Graham Number - Last Price"),
+                    "graham indicator": st.column_config.NumberColumn(format="%.2f", help="Graham Number - Current Price"),
                     "what about the graham?": st.column_config.TextColumn(help="Good if Graham Indicator > 0"),
                     "dividend yield [%]": st.column_config.NumberColumn(format="%.2f%%"),
                 }
