@@ -132,6 +132,8 @@ def build_dataframe(api_key=None):
 
             name = get_nested(f, ["General", "Name"]) or get_nested(f, ["General", "Code"])
             mcap = get_nested(f, ["Highlights", "MarketCapitalization"])
+            bvps = get_nested(f, ["Highlights", "BookValue"])
+            eps = get_nested(f, ["Highlights", "EarningsShare"])
 
             row = {
                 "ticker": t,
@@ -142,8 +144,8 @@ def build_dataframe(api_key=None):
                 "current price": price,
                 "market cap": mcap,
                 "price to book": get_nested(f, ["Valuation", "PriceBookMRQ"]),
-                "book value per share": get_nested(f, ["Highlights", "BookValue"]),
-                "trailing eps": get_nested(f, ["Highlights", "EarningsShare"]),
+                "book value per share": bvps,
+                "trailing eps": eps,
                 "forward eps": get_nested(f, ["Highlights", "EPSEstimateCurrentYear"]),
                 "trailing pe": get_nested(f, ["Valuation", "TrailingPE"]),
                 "forward pe": get_nested(f, ["Valuation", "ForwardPE"]),
@@ -154,8 +156,12 @@ def build_dataframe(api_key=None):
 
             rows_by_ticker[t] = row
 
-            # If EODHD can't provide a price, we try yfinance for that ticker (gap filler).
-            if price is None:
+            # Gap filler trigger:
+            # - If EODHD can't provide a price, OR
+            # - If fundamentals are effectively missing (no name and no key valuation inputs),
+            # then try yfinance for that ticker.
+            fundamentals_missing = (name is None) and (mcap is None) and (bvps is None) and (eps is None)
+            if price is None or fundamentals_missing:
                 tickers_needing_yf.append(t)
 
         # 2) Fetch fallback data (YFinance) for tickers missing EODHD price

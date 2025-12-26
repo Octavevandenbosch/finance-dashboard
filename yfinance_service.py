@@ -120,8 +120,37 @@ def fetch_from_yfinance(tickers: list[str]) -> list[dict]:
     
     print(f"DEBUG: Starting YFinance threaded fetch for {len(tickers)} tickers...")
     scraper = TickerScraper(tickers, num_threads=10)
-    data = scraper.parsed_data
-    print(f"DEBUG: YFinance fetch complete. Got {len(data)} results.")
-    
-    # Return rows for all tickers we managed to parse; caller can merge/fill.
-    return [d for d in data if isinstance(d, dict) and d.get("ticker")]
+    parsed = [d for d in scraper.parsed_data if isinstance(d, dict) and d.get("ticker")]
+    parsed_map = {d["ticker"]: d for d in parsed}
+    print(f"DEBUG: YFinance fetch complete. Got {len(parsed)} results.")
+
+    # IMPORTANT:
+    # Always return an entry for every requested ticker, even if Yahoo failed.
+    # This makes it obvious (in merged output) that fallback was attempted.
+    out: list[dict] = []
+    for t in tickers:
+        if t in parsed_map:
+            out.append(parsed_map[t])
+        else:
+            out.append(
+                {
+                    "ticker": t,
+                    "name": None,
+                    "industry": None,
+                    "country": None,
+                    "currency": None,
+                    "current price": None,
+                    "market cap": None,
+                    "price to book": None,
+                    "book value per share": None,
+                    "trailing eps": None,
+                    "forward eps": None,
+                    "trailing pe": None,
+                    "forward pe": None,
+                    "dividend yield [%]": None,
+                    "dividend rate": None,
+                    "beta": None,
+                }
+            )
+
+    return out
