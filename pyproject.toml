@@ -8,5 +8,6 @@ dependencies = [
     "pandas>=2.0.0",
     "requests>=2.25.0",
     "streamlit>=1.30.0",
-    "numpy>=1.20.0"
+    "numpy>=1.20.0",
+    "yfinance>=1.0",
 ]

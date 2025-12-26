@@ -2,6 +2,8 @@ import requests
 import pandas as pd
 import numpy as np
 import os
+import time
+from yfinance_service import fetch_from_yfinance
 
 # Default to environment variable, or None (enforce providing key)
 DEFAULT_API_KEY = os.environ.get("EODHD_API_KEY")
@@ -125,25 +127,39 @@ def build_dataframe(api_key=None):
 
     with requests.Session() as session:
         # Fetch prices in bulk using the new function
-        # We take the first ticker as 'main' and rest as 'others'
         prices = {}
         if current_tickers:
-            main_ticker = current_tickers[0]
-            other_tickers = current_tickers[1:]
             try:
-                # Append .US if missing for the API call, but keep original for mapping if needed
-                # Ideally, we normalize everything to have .US or not. 
-                # Let's prepare the list for the API
-                api_main = main_ticker if main_ticker.endswith(".US") else f"{main_ticker}.US"
-                api_others = [t if t.endswith(".US") else f"{t}.US" for t in other_tickers]
+                # Prepare bulk request: first ticker is main, rest are 's'
+                # Ensure .US suffix for API call
+                api_main = current_tickers[0] if current_tickers[0].endswith(".US") else f"{current_tickers[0]}.US"
+                api_others = [t if t.endswith(".US") else f"{t}.US" for t in current_tickers[1:]]
                 
-                prices = fetch_latest_delayed_prices(session, api_main, api_others, current_api_key)
-                print(f"DEBUG: Fetched {len(prices)} prices.")
+                # Split api_others into chunks of ~15 to avoid URL length limits/API limits if list is huge
+                # EODHD real-time often supports fewer bulk tickers than delayed. Let's do chunking safe side.
+                
+                all_api_tickers = [api_main] + api_others
+                
+                # Chunking logic
+                chunk_size = 15 # conservative for real-time
+                for i in range(0, len(all_api_tickers), chunk_size):
+                    chunk = all_api_tickers[i:i+chunk_size]
+                    main_t = chunk[0]
+                    other_t = chunk[1:]
+                    
+                    chunk_prices = fetch_latest_delayed_prices(session, main_t, other_t, current_api_key)
+                    prices.update(chunk_prices)
+                    
+                print(f"DEBUG: Fetched {len(prices)} prices from EODHD.")
             except Exception as e:
                 print(f"Error fetching prices: {e}")
+                # Don't fail completely, just have empty prices
                 prices = {}
 
-        rows = []
+        # 1. Build EODHD Rows
+        eodhd_rows = []
+        missing_tickers = [] # Track which tickers failed completely (no price or no fundamentals)
+
         for t in current_tickers:
             # Ensure ticker has .US for lookup
             api_ticker = t if t.endswith(".US") else f"{t}.US"
@@ -154,13 +170,23 @@ def build_dataframe(api_key=None):
             # Get Price from our bulk fetched dictionary
             price = prices.get(api_ticker)
             
+            # Check if we got valid data. If we have NO price and NO name/code from fundamentals, 
+            # it implies the ticker might be unsupported by EODHD or wrong exchange.
+            name = get_nested(f, ["General", "Name"]) or get_nested(f, ["General", "Code"])
+            
+            # Condition to use fallback: 
+            # If (Price is None) OR (Name is None/Empty) -> Try YFinance
+            if price is None and not name:
+                missing_tickers.append(t)
+                continue 
+
             # Try to get data from fundamentals if price is missing (fallback)
             # Market Cap fallback
             mcap = get_nested(f, ["Highlights", "MarketCapitalization"])
             
             row = {
                 "ticker": t,
-                "name": get_nested(f, ["General", "Name"]) or get_nested(f, ["General", "Code"]),
+                "name": name,
                 "industry": get_nested(f, ["General", "Industry"]),
                 "country": get_nested(f, ["General", "CountryName"]),
                 "currency": get_nested(f, ["General", "CurrencyCode"]),
@@ -176,7 +202,16 @@ def build_dataframe(api_key=None):
                 "dividend rate": get_nested(f, ["Highlights", "DividendShare"]),
                 "beta": get_nested(f, ["Technicals", "Beta"]),
             }
-            rows.append(row)
+            eodhd_rows.append(row)
+
+        # 2. Fetch Fallback Data (YFinance)
+        yf_rows = []
+        if missing_tickers:
+            print(f"DEBUG: {len(missing_tickers)} tickers missing from EODHD. Trying fallback: {missing_tickers}")
+            yf_rows = fetch_from_yfinance(missing_tickers)
+        
+        # 3. Combine Results
+        all_rows = eodhd_rows + yf_rows
 
     cols = [
         "ticker", "name", "industry", "country", "currency",
@@ -184,7 +219,7 @@ def build_dataframe(api_key=None):
         "trailing eps", "forward eps", "trailing pe", "forward pe",
         "dividend yield [%]", "dividend rate", "beta"
     ]
-    df = pd.DataFrame(rows)[cols]
+    df = pd.DataFrame(all_rows)[cols]
 
     # --- Calculate Graham Number & Indicator ---
     # Ensure numeric types (coerce errors to NaN)
