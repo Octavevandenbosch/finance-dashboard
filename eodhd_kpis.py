@@ -10,10 +10,12 @@ DEFAULT_API_KEY = os.environ.get("EODHD_API_KEY")
 
 # Google Sheet Configuration
 # We use the 'export' format to get a clean CSV
-# gid=997898919 is the specific tab ID you provided
+# IMPORTANT:
+# - If you include `gid=...`, you pin the import to one specific tab.
+# - If you OMIT `gid`, Google returns the CSV for the FIRST (left-most) tab,
+#   which lets you reorder tabs without changing code.
 SHEET_ID = "1oDb5xE0INQX78i5zmYa_pMahM1186RSU6pVBr0ea9t4"
-SHEET_GID = "997898919" 
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
 def fetch_tickers_from_sheet():
     try:
