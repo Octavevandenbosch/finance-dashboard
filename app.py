@@ -13,13 +13,19 @@ st.set_page_config(
 st.title("📈 EODHD Financial KPI Dashboard")
 st.markdown("This dashboard fetches real-time financial data using the EODHD API.")
 
+# Require API key from Streamlit secrets (local `.streamlit/secrets.toml` or Streamlit Cloud Secrets)
+api_key = st.secrets.get("EODHD_API_KEY")
+if not api_key:
+    st.error(
+        "Missing `EODHD_API_KEY` in Streamlit secrets.\n\n"
+        "Set it locally in `.streamlit/secrets.toml` or in Streamlit Cloud → App → Settings → Secrets."
+    )
+    st.stop()
+
 # Button to refresh data
 if st.button("Fetch Latest Data", type="primary"):
     with st.spinner("Fetching data from API..."):
         try:
-            # Try to get API key from Streamlit secrets, otherwise None (uses default in script)
-            api_key = st.secrets.get("EODHD_API_KEY")
-            
             # Run the data fetching function
             df = build_dataframe(api_key=api_key)
             
