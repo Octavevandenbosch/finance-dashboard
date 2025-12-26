@@ -102,6 +102,37 @@ def to_dividend_yield_pct(x):
         return None
     return x * 100.0 if x <= 1.0 else x
 
+def _latest_balance_sheet_value(fundamentals: dict, candidate_fields: list[str]) -> float | None:
+    """
+    Try to extract the latest available balance sheet value for one of the candidate field names.
+    EODHD fundamentals often expose it under Financials -> Balance_Sheet -> (yearly|quarterly) -> {date: {...}}.
+    Returns float if found, else None.
+    """
+    bs_yearly = get_nested(fundamentals, ["Financials", "Balance_Sheet", "yearly"], default=None)
+    bs_quarterly = get_nested(fundamentals, ["Financials", "Balance_Sheet", "quarterly"], default=None)
+
+    def _pick_latest(bs: dict | None) -> dict | None:
+        if not isinstance(bs, dict) or not bs:
+            return None
+        # Keys are typically date strings like "2025-09-30"
+        latest_key = sorted(bs.keys())[-1]
+        latest = bs.get(latest_key)
+        return latest if isinstance(latest, dict) else None
+
+    for bs in (bs_yearly, bs_quarterly):
+        latest = _pick_latest(bs)
+        if not latest:
+            continue
+        for field in candidate_fields:
+            v = latest.get(field)
+            if v is None:
+                continue
+            try:
+                return float(v)
+            except Exception:
+                continue
+    return None
+
 def build_dataframe(api_key=None):
     # Use provided key, or environment variable
     # We removed the fallback to "DEMO" to enforce using the paid key
@@ -134,6 +165,16 @@ def build_dataframe(api_key=None):
             mcap = get_nested(f, ["Highlights", "MarketCapitalization"])
             bvps = get_nested(f, ["Highlights", "BookValue"])
             eps = get_nested(f, ["Highlights", "EarningsShare"])
+            enterprise_value = get_nested(f, ["Valuation", "EnterpriseValue"])
+            peg_ratio = get_nested(f, ["Highlights", "PEGRatio"])
+            total_debt = _latest_balance_sheet_value(
+                f,
+                candidate_fields=[
+                    "totalDebt",
+                    "shortLongTermDebtTotal",
+                    "shortLongTermDebt",
+                ],
+            )
 
             row = {
                 "ticker": t,
@@ -143,7 +184,10 @@ def build_dataframe(api_key=None):
                 "currency": get_nested(f, ["General", "CurrencyCode"]),
                 "current price": price,
                 "market cap": mcap,
+                "enterprise value": enterprise_value,
+                "total debt": total_debt,
                 "price to book": get_nested(f, ["Valuation", "PriceBookMRQ"]),
+                "peg ratio": peg_ratio,
                 "book value per share": bvps,
                 "trailing eps": eps,
                 "forward eps": get_nested(f, ["Highlights", "EPSEstimateCurrentYear"]),
@@ -190,11 +234,20 @@ def build_dataframe(api_key=None):
 
     cols = [
         "ticker", "name", "industry", "country", "currency",
-        "current price", "market cap", "price to book", "book value per share",
+        "current price", "market cap", "enterprise value", "total debt",
+        "price to book", "peg ratio", "book value per share",
         "trailing eps", "forward eps", "trailing pe", "forward pe",
         "dividend yield [%]", "dividend rate", "beta"
     ]
-    df = pd.DataFrame(all_rows)[cols]
+    # Build DataFrame WITHOUT enforcing column order here.
+    # Column ordering is handled in `app.py` so UI/export are centralized.
+    df = pd.DataFrame(all_rows)
+
+    # Ensure required columns exist (so calculations below don't KeyError).
+    # Missing ones become NaN.
+    for c in cols:
+        if c not in df.columns:
+            df[c] = np.nan
 
     # --- Calculate Graham Number & Indicator ---
     # Ensure numeric types (coerce errors to NaN). This fixes the "float and str" error.
