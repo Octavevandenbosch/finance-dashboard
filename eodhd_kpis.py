@@ -56,31 +56,22 @@ def get_nested(d, path, default=None):
         cur = cur[key]
     return cur
 
-def fetch_latest_delayed_prices(session: requests.Session, main: str, others: list[str], api_key: str) -> dict[str, float]:
-    # This uses the real-time endpoint but allows fetching multiple tickers in one go via 's' parameter
-    url = f"https://eodhd.com/api/real-time/{main}"
+def fetch_latest_delayed_price(session: requests.Session, ticker: str, api_key: str) -> float | None:
+    url = f"https://eodhd.com/api/real-time/{ticker}"
     params = {"api_token": api_key, "fmt": "json"}
-    if others:
-        params["s"] = ",".join(others)
-        
-    r = session.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = session.get(url, params=params, timeout=20)
+        if r.status_code in (403, 404):
+            return None
+        r.raise_for_status()
 
-    if isinstance(data, dict):  # single result
-        # Handle case where API returns single dict
-        code = data.get("code")
-        price = data.get("close")
-        if code and price is not None:
-            return {code: float(price)}
-        return {}
-        
-    # multiple results (list of dicts)
-    out = {}
-    for row in data:
-        if row.get("code") and row.get("close") is not None:
-            out[row["code"]] = float(row["close"])
-    return out
+        data = r.json()
+        # Single-ticker response is a dict with fields like: code, timestamp, open/high/low/close...
+        close = data.get("close") if isinstance(data, dict) else None
+        return float(close) if close is not None else None
+    except Exception as e:
+        print(f"Error fetching price for {ticker}: {e}")
+        return None
 
 def fetch_fundamentals(session, ticker: str, api_key: str) -> dict:
     url = f"https://eodhd.com/api/fundamentals/{ticker}"
@@ -126,64 +117,20 @@ def build_dataframe(api_key=None):
         return pd.DataFrame()
 
     with requests.Session() as session:
-        # Fetch prices in bulk using the new function
-        prices = {}
-        if current_tickers:
-            try:
-                # Prepare bulk request: first ticker is main, rest are 's'
-                # Ensure .US suffix for API call
-                api_main = current_tickers[0] if current_tickers[0].endswith(".US") else f"{current_tickers[0]}.US"
-                api_others = [t if t.endswith(".US") else f"{t}.US" for t in current_tickers[1:]]
-                
-                # Split api_others into chunks of ~15 to avoid URL length limits/API limits if list is huge
-                # EODHD real-time often supports fewer bulk tickers than delayed. Let's do chunking safe side.
-                
-                all_api_tickers = [api_main] + api_others
-                
-                # Chunking logic
-                chunk_size = 15 # conservative for real-time
-                for i in range(0, len(all_api_tickers), chunk_size):
-                    chunk = all_api_tickers[i:i+chunk_size]
-                    main_t = chunk[0]
-                    other_t = chunk[1:]
-                    
-                    chunk_prices = fetch_latest_delayed_prices(session, main_t, other_t, current_api_key)
-                    prices.update(chunk_prices)
-                    
-                print(f"DEBUG: Fetched {len(prices)} prices from EODHD.")
-            except Exception as e:
-                print(f"Error fetching prices: {e}")
-                # Don't fail completely, just have empty prices
-                prices = {}
-
-        # 1. Build EODHD Rows
-        eodhd_rows = []
-        missing_tickers = [] # Track which tickers failed completely (no price or no fundamentals)
+        # 1) Build EODHD rows, fetching price via the *working* single-ticker function.
+        # IMPORTANT: We never append ".US" or otherwise modify tickers.
+        rows_by_ticker: dict[str, dict] = {}
+        tickers_needing_yf: list[str] = []
 
         for t in current_tickers:
-            # Ensure ticker has .US for lookup
-            api_ticker = t if t.endswith(".US") else f"{t}.US"
-            
-            # Fetch fundamentals
-            f = fetch_fundamentals(session, api_ticker, current_api_key)
-            
-            # Get Price from our bulk fetched dictionary
-            price = prices.get(api_ticker)
-            
-            # Check if we got valid data. If we have NO price and NO name/code from fundamentals, 
-            # it implies the ticker might be unsupported by EODHD or wrong exchange.
-            name = get_nested(f, ["General", "Name"]) or get_nested(f, ["General", "Code"])
-            
-            # Condition to use fallback: 
-            # If (Price is None) OR (Name is None/Empty) -> Try YFinance
-            if price is None and not name:
-                missing_tickers.append(t)
-                continue 
+            api_ticker = t  # use exactly as provided
 
-            # Try to get data from fundamentals if price is missing (fallback)
-            # Market Cap fallback
+            f = fetch_fundamentals(session, api_ticker, current_api_key)
+            price = fetch_latest_delayed_price(session, api_ticker, current_api_key)
+
+            name = get_nested(f, ["General", "Name"]) or get_nested(f, ["General", "Code"])
             mcap = get_nested(f, ["Highlights", "MarketCapitalization"])
-            
+
             row = {
                 "ticker": t,
                 "name": name,
@@ -202,16 +149,36 @@ def build_dataframe(api_key=None):
                 "dividend rate": get_nested(f, ["Highlights", "DividendShare"]),
                 "beta": get_nested(f, ["Technicals", "Beta"]),
             }
-            eodhd_rows.append(row)
 
-        # 2. Fetch Fallback Data (YFinance)
-        yf_rows = []
-        if missing_tickers:
-            print(f"DEBUG: {len(missing_tickers)} tickers missing from EODHD. Trying fallback: {missing_tickers}")
-            yf_rows = fetch_from_yfinance(missing_tickers)
-        
-        # 3. Combine Results
-        all_rows = eodhd_rows + yf_rows
+            rows_by_ticker[t] = row
+
+            # If EODHD can't provide a price, we try yfinance for that ticker (gap filler).
+            if price is None:
+                tickers_needing_yf.append(t)
+
+        # 2) Fetch fallback data (YFinance) for tickers missing EODHD price
+        if tickers_needing_yf:
+            print(
+                f"DEBUG: {len(tickers_needing_yf)} tickers missing EODHD price. "
+                f"Trying YFinance fallback for: {tickers_needing_yf}"
+            )
+            yf_rows = fetch_from_yfinance(tickers_needing_yf)
+            yf_map = {r.get("ticker"): r for r in yf_rows if isinstance(r, dict) and r.get("ticker")}
+
+            # Merge: fill missing fields (especially current price) from yfinance
+            for t in tickers_needing_yf:
+                yf_row = yf_map.get(t)
+                if not yf_row:
+                    continue
+                base = rows_by_ticker.get(t, {"ticker": t})
+                for k, v in yf_row.items():
+                    if k == "ticker":
+                        continue
+                    if base.get(k) is None and v is not None:
+                        base[k] = v
+                rows_by_ticker[t] = base
+
+        all_rows = list(rows_by_ticker.values())
 
     cols = [
         "ticker", "name", "industry", "country", "currency",
@@ -222,25 +189,40 @@ def build_dataframe(api_key=None):
     df = pd.DataFrame(all_rows)[cols]
 
     # --- Calculate Graham Number & Indicator ---
-    # Ensure numeric types (coerce errors to NaN)
-    for col in ["book value per share", "trailing eps", "current price"]:
+    # Ensure numeric types (coerce errors to NaN). This fixes the "float and str" error.
+    numeric_cols = ["book value per share", "trailing eps", "current price"]
+    for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     # Graham Number = Sqrt(22.5 * EPS * BVPS)
-    # Logic: If EPS or BVPS is negative or NaN, Graham Number is undefined (NaN)
     def calculate_graham(row):
         eps = row["trailing eps"]
         bvps = row["book value per share"]
         
-        if pd.isna(eps) or pd.isna(bvps) or eps < 0 or bvps < 0:
+        # Check for NaN
+        if pd.isna(eps) or pd.isna(bvps):
             return np.nan
-        return round((22.5 * eps * bvps) ** 0.5, 2)
+        # Check for negative values (cannot sqrt negative)
+        if eps < 0 or bvps < 0:
+            return np.nan
+            
+        try:
+            return round((22.5 * eps * bvps) ** 0.5, 2)
+        except Exception:
+            return np.nan
 
     df["graham"] = df.apply(calculate_graham, axis=1)
 
-    # Graham Indicator = Graham Number - Last Price
-    # (Positive means undervalued, Negative means overvalued relative to Graham Number)
-    df["graham indicator"] = df["graham"] - df["current price"]
+    # Graham Indicator = Graham Number - Current Price
+    def calculate_indicator(row):
+        graham = row["graham"]
+        price = row["current price"]
+        
+        if pd.isna(graham) or pd.isna(price):
+            return np.nan
+        return graham - price
+
+    df["graham indicator"] = df.apply(calculate_indicator, axis=1)
 
     # --- Graham Label ---
     # Good if Indicator > 0 (Undervalued), Bad if <= 0 (Overvalued), else "can't define"

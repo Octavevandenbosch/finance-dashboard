@@ -1,70 +1,127 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
+from threading import Thread
 
-def fetch_yfinance_data(ticker: str) -> dict:
-    """
-    Fetches data for a single ticker using yfinance and maps it to the
-    EODHD dictionary structure used in the main app.
-    """
-    try:
-        # yfinance tickers might not need the .US suffix for US stocks, 
-        # but often handles them fine. If fails, we might need logic to strip it.
-        # Generally, "AAPL.US" works on EODHD but Yahoo expects "AAPL".
-        # European stocks like "AIR.PA" are the same on both.
+class TickerScraper:
+    def __init__(self, ticker_list, num_threads=5) -> None:
+        self.ticker_list = ticker_list
+        self.num_threads = num_threads
+        self.data = self.download_tickers_threaded()
+        # We process the data into a list of dictionaries
+        self.parsed_data = [self.parse_ticker(ticker, self.data[ticker]) for ticker in self.data if ticker in self.data]
+
+    def download_tickers_threaded(self):
+        def download_one_ticker(ticker_name, output):
+            try:
+                # yfinance often works better without .US suffix for US stocks
+                # but for international stocks (e.g. AIR.PA), the suffix is needed.
+                # We try as-is first.
+                search_ticker = ticker_name
+                if ticker_name.endswith(".US"):
+                    search_ticker = ticker_name.replace(".US", "")
+                
+                ticker_obj = yf.Ticker(search_ticker)
+                
+                # Fetch info and fast_info
+                # Note: fast_info is newer and sometimes more reliable for price/mcap
+                output[ticker_name] = (ticker_obj.info, ticker_obj.fast_info)
+                # print(f"✅ Done downloading {ticker_name} (YF)")
+            except Exception as e:
+                print(f"⚠️ Failed to fetch {ticker_name} from YF: {e}")
+
+        output = {}
+        threads = []
         
-        # Simple heuristic: if it ends in .US, try stripping it for Yahoo
-        yf_ticker = ticker
-        if ticker.endswith(".US"):
-            yf_ticker = ticker.replace(".US", "")
+        # Batch threads to avoid overwhelming logic
+        # Simple implementation: start all threads in batches of size num_threads
+        for i in range(0, len(self.ticker_list), self.num_threads):
+            batch = self.ticker_list[i:i + self.num_threads]
+            batch_threads = []
+            for ticker in batch:
+                t = Thread(target=download_one_ticker, args=(ticker, output))
+                t.start()
+                batch_threads.append(t)
             
-        stock = yf.Ticker(yf_ticker)
-        # fast_info is sometimes faster/more reliable for price
-        info = stock.info
-        
-        # If we didn't get valid info (e.g. no 'symbol' or 'regularMarketPrice'), return empty
-        # Some keys are essential
-        if not info: 
+            for t in batch_threads:
+                t.join()
+
+        return output
+
+    def load_string_value(self, stock, key):
+        try:
+            x = stock.get(key)
+            if x is None:
+                return None
+            return str(x)
+        except:
+            return None
+
+    def load_number_value(self, stock, key):
+        try:
+            # Handle fast_info object which acts like a dict but isn't exactly one sometimes
+            if hasattr(stock, key):
+                x = getattr(stock, key)
+            else:
+                x = stock.get(key)
+                
+            if x is None:
+                return None
+            return float(x)
+        except:
+            return None
+
+    def parse_ticker(self, ticker_name, ticker_data):
+        if not ticker_data:
             return {}
+            
+        ticker_info, ticker_fast_info = ticker_data
 
-        # Map yfinance info keys to EODHD-style keys expected by your app
+        # Mapping to EODHD columns expected by the app
+        current_price = (
+            self.load_number_value(ticker_info, "currentPrice")
+            or self.load_number_value(ticker_info, "regularMarketPrice")
+            or self.load_number_value(ticker_fast_info, "last_price")
+        )
+
+        dividend_yield = self.load_number_value(ticker_info, "dividendYield")
+
         row = {
-            "ticker": ticker, # Keep original ticker name for consistency
-            "name": info.get("longName") or info.get("shortName"),
-            "industry": info.get("industry"),
-            "country": info.get("country"),
-            "currency": info.get("currency"),
-            "current price": info.get("currentPrice") or info.get("regularMarketPrice"),
-            "market cap": info.get("marketCap"),
-            "price to book": info.get("priceToBook"),
-            "book value per share": info.get("bookValue"),
-            "trailing eps": info.get("trailingEps"),
-            "forward eps": info.get("forwardEps"),
-            "trailing pe": info.get("trailingPE"),
-            "forward pe": info.get("forwardPE"),
+            "ticker": ticker_name,
+            "name": self.load_string_value(ticker_info, "shortName") or self.load_string_value(ticker_info, "longName"),
+            "industry": self.load_string_value(ticker_info, "industry"),
+            "country": self.load_string_value(ticker_info, "country"),
+            "currency": self.load_string_value(ticker_info, "currency"),
             
-            # Dividends
-            "dividend yield [%]": (info.get("dividendYield", 0) or 0) * 100 if info.get("dividendYield") else None,
-            "dividend rate": info.get("dividendRate"),
+            # Price: Prefer regularMarketPrice from info, fallback to fast_info last_price
+            "current price": current_price,
             
-            "beta": info.get("beta"),
+            "market cap": self.load_number_value(ticker_info, "marketCap") or self.load_number_value(ticker_fast_info, "market_cap"),
+            "price to book": self.load_number_value(ticker_info, "priceToBook"),
+            "book value per share": self.load_number_value(ticker_info, "bookValue"),
+            "trailing eps": self.load_number_value(ticker_info, "trailingEps"),
+            "forward eps": self.load_number_value(ticker_info, "forwardEps"),
+            "trailing pe": self.load_number_value(ticker_info, "trailingPE"),
+            "forward pe": self.load_number_value(ticker_info, "forwardPE"),
+            
+            "dividend yield [%]": (dividend_yield * 100.0) if dividend_yield is not None else None,
+            "dividend rate": self.load_number_value(ticker_info, "dividendRate"),
+            
+            "beta": self.load_number_value(ticker_info, "beta"),
         }
-        
         return row
-        
-    except Exception as e:
-        print(f"yfinance error for {ticker}: {e}")
-        return {}
 
 def fetch_from_yfinance(tickers: list[str]) -> list[dict]:
     """
-    Fetches data for a list of tickers using yfinance.
+    Main entry point to fetch data for a list of tickers using the TickerScraper class.
     """
-    rows = []
-    for t in tickers:
-        data = fetch_yfinance_data(t)
-        if data:
-            rows.append(data)
-        else:
-            # Add an empty row or partial row so it appears in the table as missing
-            rows.append({"ticker": t, "name": "Not Found"})
-    return rows
+    if not tickers:
+        return []
+    
+    print(f"DEBUG: Starting YFinance threaded fetch for {len(tickers)} tickers...")
+    scraper = TickerScraper(tickers, num_threads=10)
+    data = scraper.parsed_data
+    print(f"DEBUG: YFinance fetch complete. Got {len(data)} results.")
+    
+    # Return rows for all tickers we managed to parse; caller can merge/fill.
+    return [d for d in data if isinstance(d, dict) and d.get("ticker")]
