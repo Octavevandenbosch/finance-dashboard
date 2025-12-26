@@ -10,6 +10,7 @@ COLUMN_ORDER = [
     "price to book", "peg ratio", "book value per share",
     "trailing eps", "forward eps", "trailing pe", "forward pe",
     "dividend yield [%]", "dividend rate", "beta",
+    "price source", "yfinance attempted",
     "graham", "graham indicator", "what about the graham?",
 ]
 

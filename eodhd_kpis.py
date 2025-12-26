@@ -183,6 +183,8 @@ def build_dataframe(api_key=None):
                 "country": get_nested(f, ["General", "CountryName"]),
                 "currency": get_nested(f, ["General", "CurrencyCode"]),
                 "current price": price,
+                "price source": "EODHD" if price is not None else None,
+                "yfinance attempted": False,
                 "market cap": mcap,
                 "enterprise value": enterprise_value,
                 "total debt": total_debt,
@@ -220,14 +222,19 @@ def build_dataframe(api_key=None):
             # Merge: fill missing fields (especially current price) from yfinance
             for t in tickers_needing_yf:
                 yf_row = yf_map.get(t)
-                if not yf_row:
-                    continue
                 base = rows_by_ticker.get(t, {"ticker": t})
+                base["yfinance attempted"] = True
+                price_before = base.get("current price")
                 for k, v in yf_row.items():
                     if k == "ticker":
                         continue
                     if base.get(k) is None and v is not None:
                         base[k] = v
+                # Record price source if YFinance filled the gap
+                if price_before is None and base.get("current price") is not None:
+                    base["price source"] = "YFinance"
+                if base.get("price source") is None and base.get("current price") is None:
+                    base["price source"] = "None"
                 rows_by_ticker[t] = base
 
         all_rows = list(rows_by_ticker.values())
@@ -237,7 +244,8 @@ def build_dataframe(api_key=None):
         "current price", "market cap", "enterprise value", "total debt",
         "price to book", "peg ratio", "book value per share",
         "trailing eps", "forward eps", "trailing pe", "forward pe",
-        "dividend yield [%]", "dividend rate", "beta"
+        "dividend yield [%]", "dividend rate", "beta",
+        "price source", "yfinance attempted",
     ]
     # Build DataFrame WITHOUT enforcing column order here.
     # Column ordering is handled in `app.py` so UI/export are centralized.
